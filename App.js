@@ -1,14 +1,17 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { StyleSheet, Text, View, ScrollView, SafeAreaView, TouchableOpacity, TextInput, Switch, Modal, KeyboardAvoidingView, Platform, Animated, Dimensions, Alert, ActivityIndicator } from 'react-native';
+import { StyleSheet, Text, View, ScrollView, SafeAreaView, TouchableOpacity, TextInput, Switch, Modal, KeyboardAvoidingView, Platform, Animated, Dimensions, Alert, ActivityIndicator, Image } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location'; 
+import * as ImagePicker from 'expo-image-picker';
 
 // --- FIREBASE IMPORTS ---
-import { auth, db } from './firebaseConfig'; 
+// IMPORTANT: Ensure 'storage' is exported from your firebaseConfig.js
+import { auth, db, storage } from './firebaseConfig'; 
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut } from 'firebase/auth';
 import { collection, addDoc, query, where, onSnapshot, orderBy, setDoc, doc, updateDoc, deleteDoc, arrayUnion, getDoc } from 'firebase/firestore';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 const { width } = Dimensions.get('window');
 
@@ -20,6 +23,14 @@ const GlassCard = ({ children, style }) => (
     </BlurView>
   </View>
 );
+
+const UserAvatar = ({ url, size = 50, style }) => (
+    <Image 
+        source={url ? { uri: url } : { uri: "https://ui-avatars.com/api/?name=Runner&background=random&color=fff" }} 
+        style={[{ width: size, height: size, borderRadius: size / 2, backgroundColor: '#333' }, style]} 
+    />
+);
+
 
 const Toast = ({ message, visible, onHide }) => {
   const opacity = useRef(new Animated.Value(0)).current;
@@ -44,7 +55,7 @@ const Toast = ({ message, visible, onHide }) => {
 
 // --- AUTH SCREENS ---
 
-const LoginScreen = ({ onLogin }) => {
+const LoginScreen = ({ onLogin, onGoToSignUp }) => { // 👈 Added onGoToSignUp prop
   const [email, setEmail] = useState('');
   return (
     <View style={styles.container}>
@@ -61,6 +72,12 @@ const LoginScreen = ({ onLogin }) => {
             <Text style={{ color: '#22c55e', fontSize: 24, fontWeight: 'bold' }}>Log In</Text>
           </TouchableOpacity>
         </GlassCard>
+        
+        {/* NEW: Button to switch to Sign Up */}
+        <TouchableOpacity style={{marginTop: 20, alignSelf: 'center'}} onPress={onGoToSignUp}>
+            <Text style={{color: 'white', opacity: 0.8}}>New here? <Text style={{fontWeight: 'bold', color: '#ef4444'}}>Create Profile</Text></Text>
+        </TouchableOpacity>
+
       </KeyboardAvoidingView>
     </View>
   );
@@ -139,24 +156,38 @@ const OnboardingFlow = ({ onRegister }) => {
 
 // --- APP FEATURES ---
 
-const ProfileScreen = ({ setCurrentScreen, userProfile, onUpdateUser, onCancelSubscription }) => {
+const ProfileScreen = ({ setCurrentScreen, userProfile, onUpdateUser, onCancelSubscription, onUploadPhoto }) => {
   const [fullName, setFullName] = useState(userProfile.fullName || '');
   const [email, setEmail] = useState(userProfile.email || '');
   const [phone, setPhone] = useState(userProfile.phone || '');
-  
-  const [shareConsent, setShareConsent] = useState(() => {
-    const val = userProfile.shareConsent;
-    return val === true || val === 'true' || val === undefined;
-  });
+  const [shareConsent, setShareConsent] = useState(userProfile.shareConsent ?? true);
+  const [uploading, setUploading] = useState(false);
+
+  // INDUSTRY STANDARD IMAGE PICKER
+  const pickImage = async () => {
+    try {
+        let result = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ['images'],
+          allowsEditing: true,
+          aspect: [1, 1],
+          quality: 0.5,
+        });
+
+        if (!result.canceled && result.assets && result.assets.length > 0) {
+            setUploading(true);
+            await onUploadPhoto(result.assets[0].uri);
+            setUploading(false);
+        }
+    } catch (e) {
+        Alert.alert("Error", "Could not open gallery.");
+    }
+  };
 
   const handleCancelClick = () => {
       Alert.alert(
           "Cancel Subscription?",
           "You will lose the ability to create new clubs. Your existing clubs will remain.",
-          [
-              { text: "Keep It", style: "cancel" },
-              { text: "Confirm Cancel", style: "destructive", onPress: onCancelSubscription }
-          ]
+          [{ text: "Keep It", style: "cancel" }, { text: "Confirm Cancel", style: "destructive", onPress: onCancelSubscription }]
       );
   };
 
@@ -165,40 +196,53 @@ const ProfileScreen = ({ setCurrentScreen, userProfile, onUpdateUser, onCancelSu
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <TouchableOpacity onPress={() => setCurrentScreen('Home')} style={styles.backBtn}><Text style={styles.backBtnText}>← Back to Dashboard</Text></TouchableOpacity>
         <Text style={styles.greeting}>My Profile</Text>
-        <GlassCard style={{marginTop: 25}}>
-          <Text style={styles.label}>FULL NAME</Text><TextInput style={styles.input} value={fullName} onChangeText={setFullName} />
-          <Text style={styles.label}>EMAIL ADDRESS</Text><TextInput style={styles.input} value={email} onChangeText={setEmail} keyboardType="email-address" />
-          <Text style={styles.label}>PHONE NUMBER</Text><TextInput style={styles.input} value={phone} onChangeText={setPhone} keyboardType="phone-pad" />
-          <View style={styles.privacyRow}>
-            <View style={{flex: 1, paddingRight: 10}}><Text style={styles.valueTitle}>Club Visibility</Text><Text style={styles.valueDesc}>Allow clubs to view my contact info.</Text></View>
-            <Switch 
-                trackColor={{ false: "#767577", true: "#22c55e" }} 
-                thumbColor={"#f4f3f4"} 
-                onValueChange={(val) => setShareConsent(val)} 
-                value={shareConsent} 
-            />
-          </View>
-          <TouchableOpacity style={[styles.mainActionButton, {marginTop: 30, width: '100%', backgroundColor: '#22c55e'}]} onPress={() => onUpdateUser({ fullName, email, phone, shareConsent })}><Text style={styles.buttonText}>Save Changes</Text></TouchableOpacity>
+        
+        {/* PROFILE PHOTO SECTION */}
+        <GlassCard style={{marginTop: 25, alignItems:'center'}}>
+            <TouchableOpacity onPress={pickImage} style={{alignItems:'center', padding: 10}}>
+                {uploading ? <ActivityIndicator color="#ef4444" size="large" /> : <UserAvatar url={userProfile.photoURL} size={100} />}
+                <Text style={{color:'#3b82f6', marginTop:15, fontWeight:'bold', fontSize:16}}>Tap to Change Photo</Text>
+            </TouchableOpacity>
         </GlassCard>
 
-        {/* NEW: SUBSCRIPTION MANAGEMENT */}
+        <GlassCard style={{marginTop: 15}}>
+          <Text style={styles.label}>FULL NAME</Text>
+          <TextInput style={styles.input} value={fullName} onChangeText={setFullName} />
+          
+          {/* RESTORED EMAIL FIELD */}
+          <Text style={styles.label}>EMAIL ADDRESS</Text>
+          <TextInput style={styles.input} value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none" />
+          
+          <Text style={styles.label}>PHONE</Text>
+          <TextInput style={styles.input} value={phone} onChangeText={setPhone} keyboardType="phone-pad" />
+          
+          <View style={styles.privacyRow}>
+            <View style={{flex:1, paddingRight:10}}>
+                <Text style={styles.valueTitle}>Club Visibility</Text>
+                <Text style={styles.valueDesc}>Show my photo & details to club members.</Text>
+            </View>
+            <Switch trackColor={{ false: "#767577", true: "#22c55e" }} thumbColor={"#f4f3f4"} onValueChange={setShareConsent} value={shareConsent} />
+          </View>
+          
+          <TouchableOpacity 
+            style={[styles.mainActionButton, {marginTop: 30, backgroundColor: '#22c55e'}]} 
+            onPress={() => onUpdateUser({ fullName, email, phone, shareConsent })}
+          >
+            <Text style={styles.buttonText}>Save Changes</Text>
+          </TouchableOpacity>
+        </GlassCard>
+
         {userProfile.isFounder && (
             <GlassCard style={{marginTop: 20, borderColor: 'rgba(239, 68, 68, 0.5)'}}>
                 <Text style={{color: 'white', fontSize: 18, fontWeight: 'bold', marginBottom: 5}}>Founder Subscription</Text>
                 <Text style={styles.valueDesc}>You currently have access to create and manage clubs.</Text>
-                <TouchableOpacity 
-                    style={{marginTop: 15, padding: 15, borderRadius: 12, borderWidth: 1, borderColor: '#ef4444', alignItems: 'center'}}
-                    onPress={handleCancelClick}
-                >
-                    <Text style={{color: '#ef4444', fontWeight: 'bold'}}>Cancel Subscription</Text>
-                </TouchableOpacity>
+                <TouchableOpacity style={{marginTop: 15, padding: 15, borderRadius: 12, borderWidth: 1, borderColor: '#ef4444', alignItems: 'center'}} onPress={handleCancelClick}><Text style={{color: '#ef4444', fontWeight: 'bold'}}>Cancel Subscription</Text></TouchableOpacity>
             </GlassCard>
         )}
       </ScrollView>
     </KeyboardAvoidingView>
   );
 };
-
 const LogPage = ({ setCurrentScreen, shoes, onSaveRun, setToastMessage, setShowToast }) => {
   const [selectedClub, setSelectedClub] = useState('None');
   const [selectedShoe, setSelectedShoe] = useState(null);
@@ -1537,57 +1581,86 @@ export default function App() {
   // --- FIREBASE CLUB HANDLERS (LIVE MODE) ---
 
 // 1. UPDATED: Launch Club (Ensures Founder Status is saved forever)
+// --- UPDATED HANDLERS ---
+
+  // 1. Launch Club: Sets 'isFounder: true' on success
   const handleLaunchClub = async (name) => {
     if (!user) return;
     try {
-      // Create the Club
-      await addDoc(collection(db, "clubs"), {
-        name: name,
-        admin: userProfile.fullName || 'Unknown Admin',
-        adminId: user.uid,
-        members: [{ 
-            name: userProfile.fullName, 
-            email: user.email, 
-            phone: userProfile.phone || "", 
-            miles: 0, 
-            shareConsent: true 
-        }],
-        announcements: [],
-        prizeMessage: "Welcome to the club! Set your prizes here.",
-        createdAt: new Date()
+      await addDoc(collection(db, "clubs"), { 
+        name: name, 
+        admin: userProfile.fullName, 
+        adminId: user.uid, 
+        members: [{ name: userProfile.fullName, email: user.email, phone: userProfile.phone || "", miles: 0, shareConsent: true }], 
+        announcements: [], 
+        prizeMessage: "", 
+        createdAt: new Date() 
       });
-
-      // CRITICAL: Mark user as Founder in the database
+      // CRITICAL: Ensure Founder Status Persists
       await updateDoc(doc(db, "users", user.uid), { isFounder: true });
-
       setCurrentScreen('Clubs');
-      setToastMessage("Club Launched!");
-      setShowToast(true);
-    } catch (error) {
-      Alert.alert("Error", "Could not create club: " + error.message);
-    }
+      setToastMessage("Club Launched!"); setShowToast(true);
+    } catch (error) { Alert.alert("Error", error.message); }
   };
 
-// 2. NEW: Cancel Subscription
-  const handleCancelSubscription = async () => {
-    if (!user) return;
-    try {
-        await updateDoc(doc(db, "users", user.uid), { isFounder: false });
-        setToastMessage("Subscription Cancelled");
-        setShowToast(true);
-        setCurrentScreen('Home'); // Redirect home after cancelling
-    } catch (e) {
-        Alert.alert("Error", e.message);
-    }
+
+
+// --- MISSING HANDLER: Unlock Founder ---
+// 1. Rename 'onUnlockFounder' to 'handleUnlockFounder'
+  const handleUnlockFounder = async () => { 
+      if(user) { 
+          await updateDoc(doc(db, "users", user.uid), { isFounder: true }); 
+          setToastMessage("Unlocked!"); 
+          setShowToast(true); 
+      } 
+  };
+  
+  
+// --- NEW HANDLER: Upload Photo ---
+  const handleUploadPhoto = async (uri) => {
+      if(!user) return;
+      try {
+          const response = await fetch(uri);
+          const blob = await response.blob();
+          
+          // Create a reference to 'profile_photos/USER_ID'
+          const storageRef = ref(storage, `profile_photos/${user.uid}`);
+          
+          // Upload the file
+          await uploadBytes(storageRef, blob);
+          
+          // Get the URL
+          const downloadUrl = await getDownloadURL(storageRef);
+          
+          // Save URL to User Profile
+          await updateDoc(doc(db, "users", user.uid), { photoURL: downloadUrl });
+          
+          setToastMessage("Photo Updated"); 
+          setShowToast(true);
+      } catch (e) { 
+          Alert.alert("Upload Failed", e.message); 
+      }
   };
 
-// 3. NEW: Unlock Founder (For the Sales Page button)
-  const handleUnlockFounder = async () => {
+// 2. Unlock Founder: For Sales Page
+  const onUnlockFounder = async () => {
       if(!user) return;
       await updateDoc(doc(db, "users", user.uid), { isFounder: true });
-      setToastMessage("Unlocked! You are a Founder.");
-      setShowToast(true);
+      setToastMessage("Unlocked!"); setShowToast(true);
   };
+
+
+// 2. Rename 'onCancelSubscription' to 'handleCancelSubscription'
+  const handleCancelSubscription = async () => { 
+      if(user) { 
+          await updateDoc(doc(db, "users", user.uid), { isFounder: false }); 
+          setToastMessage("Subscription Cancelled"); 
+          setShowToast(true); 
+          setCurrentScreen('Home'); 
+      } 
+  };
+
+
 
   const handleDeleteClub = async (id) => {
     try {
@@ -1687,7 +1760,19 @@ export default function App() {
   };
 
   if (hasSeenOnboarding === null) return <View style={{flex:1, backgroundColor: '#000'}}><ActivityIndicator size="large" color="#fff" /></View>;
-  if (!user) return hasSeenOnboarding ? <LoginScreen onLogin={handleLogin} /> : <OnboardingFlow onRegister={handleOnboardingRegister} />;
+  // --- AUTH NAVIGATION LOGIC ---
+  if (!user) {
+      return hasSeenOnboarding ? (
+          <LoginScreen 
+            onLogin={handleLogin} 
+            onGoToSignUp={() => setHasSeenOnboarding(false)} // 👈 THIS WIRES UP THE BUTTON
+          />
+      ) : (
+          <OnboardingFlow 
+            onRegister={handleOnboardingRegister} 
+          />
+      );
+  }
   
   return (
     <View style={styles.container}>
@@ -1697,15 +1782,16 @@ export default function App() {
         {/* Screen: Home */}
         {currentScreen === 'Home' && <HomeScreen setCurrentScreen={setCurrentScreen} shoes={shoesWithMiles} userProfile={userProfile} monthlyMiles={monthlyMiles} onLogout={handleLogout} />}
         
-        {/* Screen: Profile */}
-{currentScreen === 'Profile' && (
-  <ProfileScreen 
-    setCurrentScreen={setCurrentScreen} 
-    userProfile={userProfile} 
-    onUpdateUser={handleUpdateUser} 
-    onCancelSubscription={handleCancelSubscription} // <--- PASS THIS
-  />
-)}
+{/* Screen: Profile */}
+        {currentScreen === 'Profile' && (
+          <ProfileScreen 
+            setCurrentScreen={setCurrentScreen} 
+            userProfile={userProfile} 
+            onUpdateUser={handleUpdateUser} 
+            onCancelSubscription={handleCancelSubscription} 
+            onUploadPhoto={handleUploadPhoto} // 👈 This connects the new function
+          />
+        )}
         
         {/* Screen: Log Run */}
         {currentScreen === 'Log' && <LogPage setCurrentScreen={setCurrentScreen} shoes={shoesWithMiles} onSaveRun={handleSaveRun} setToastMessage={setToastMessage} setShowToast={setShowToast} />}
@@ -1724,16 +1810,16 @@ export default function App() {
           />
         )}
         
-       {/* Screen: Clubs Hub */}
+  {/* Screen: Clubs Hub */}
         {currentScreen === 'Clubs' && (
-  <ClubsScreen 
-    setCurrentScreen={setCurrentScreen} 
-    clubs={clubs} 
-    onSelectClub={(c) => { setSelectedClub(c); setCurrentScreen('ClubDetail'); }}
-    userProfile={userProfile}       // <--- PASS THIS
-    onUnlockFounder={handleUnlockFounder} // <--- PASS THIS
-  />
-)}
+          <ClubsScreen 
+            setCurrentScreen={setCurrentScreen} 
+            clubs={clubs} 
+            userProfile={userProfile} 
+            onUnlockFounder={handleUnlockFounder} // 👈 Fixed Name
+            onSelectClub={(c) => { setSelectedClub(c); setCurrentScreen('ClubDetail'); }} 
+          />
+        )}
         {currentScreen === 'CreateClub' && <CreateClubScreen setCurrentScreen={setCurrentScreen} onLaunch={handleLaunchClub} />}
         {currentScreen === 'JoinClub' && <JoinClubScreen setCurrentScreen={setCurrentScreen} onJoin={onJoinClub} />}
         
