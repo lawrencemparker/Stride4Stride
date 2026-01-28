@@ -139,7 +139,7 @@ const OnboardingFlow = ({ onRegister }) => {
 
 // --- APP FEATURES ---
 
-const ProfileScreen = ({ setCurrentScreen, userProfile, onUpdateUser }) => {
+const ProfileScreen = ({ setCurrentScreen, userProfile, onUpdateUser, onCancelSubscription }) => {
   const [fullName, setFullName] = useState(userProfile.fullName || '');
   const [email, setEmail] = useState(userProfile.email || '');
   const [phone, setPhone] = useState(userProfile.phone || '');
@@ -148,6 +148,17 @@ const ProfileScreen = ({ setCurrentScreen, userProfile, onUpdateUser }) => {
     const val = userProfile.shareConsent;
     return val === true || val === 'true' || val === undefined;
   });
+
+  const handleCancelClick = () => {
+      Alert.alert(
+          "Cancel Subscription?",
+          "You will lose the ability to create new clubs. Your existing clubs will remain.",
+          [
+              { text: "Keep It", style: "cancel" },
+              { text: "Confirm Cancel", style: "destructive", onPress: onCancelSubscription }
+          ]
+      );
+  };
 
   return (
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
@@ -169,6 +180,20 @@ const ProfileScreen = ({ setCurrentScreen, userProfile, onUpdateUser }) => {
           </View>
           <TouchableOpacity style={[styles.mainActionButton, {marginTop: 30, width: '100%', backgroundColor: '#22c55e'}]} onPress={() => onUpdateUser({ fullName, email, phone, shareConsent })}><Text style={styles.buttonText}>Save Changes</Text></TouchableOpacity>
         </GlassCard>
+
+        {/* NEW: SUBSCRIPTION MANAGEMENT */}
+        {userProfile.isFounder && (
+            <GlassCard style={{marginTop: 20, borderColor: 'rgba(239, 68, 68, 0.5)'}}>
+                <Text style={{color: 'white', fontSize: 18, fontWeight: 'bold', marginBottom: 5}}>Founder Subscription</Text>
+                <Text style={styles.valueDesc}>You currently have access to create and manage clubs.</Text>
+                <TouchableOpacity 
+                    style={{marginTop: 15, padding: 15, borderRadius: 12, borderWidth: 1, borderColor: '#ef4444', alignItems: 'center'}}
+                    onPress={handleCancelClick}
+                >
+                    <Text style={{color: '#ef4444', fontWeight: 'bold'}}>Cancel Subscription</Text>
+                </TouchableOpacity>
+            </GlassCard>
+        )}
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -979,6 +1004,11 @@ const ClubDetailScreen = ({ setCurrentScreen, club, isAdmin, onDeleteClub, onRem
   const [activeTab, setActiveTab] = useState('Leaderboard'); 
   const [viewAsAdmin, setViewAsAdmin] = useState(isAdmin); 
   
+  // FIX: Sync local toggle with actual Admin status when data loads
+  useEffect(() => {
+    if (isAdmin) setViewAsAdmin(true);
+  }, [isAdmin]);
+  
   // Modal States
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [showClubConfirm, setShowClubConfirm] = useState(false);
@@ -1052,7 +1082,7 @@ const ClubDetailScreen = ({ setCurrentScreen, club, isAdmin, onDeleteClub, onRem
       {/* --- TAB 2: FEED --- */}
       {activeTab === 'Feed' && (
         <View>
-           {viewAsAdmin && <TouchableOpacity style={[styles.secondaryActionButton, {marginBottom: 20}]} onPress={() => setCurrentScreen('AnnouncementComposer')}><Text style={styles.buttonText}>+ New Announcement</Text></TouchableOpacity>}
+           {viewAsAdmin && <TouchableOpacity style={[styles.secondaryActionButton, {marginBottom: 20}]} onPress={() => setCurrentScreen('AnnouncementComposer')}><Text style={styles.buttonText}>+ New Post</Text></TouchableOpacity>}
           {club.announcements.length === 0 && <Text style={{color:'rgba(255,255,255,0.4)', textAlign:'center'}}>No announcements yet.</Text>}
           {club.announcements.map((ann) => (
             <GlassCard key={ann.id} style={{padding: 18, marginBottom: 10}}>
@@ -1071,7 +1101,7 @@ const ClubDetailScreen = ({ setCurrentScreen, club, isAdmin, onDeleteClub, onRem
         </View>
       )}
 
-      {/* --- TAB 3: ROSTER --- */}
+      {/* --- TAB 3: ROSTER (With Delete Club) --- */}
       {activeTab === 'Roster' && (
         <View>
           {viewAsAdmin && <TouchableOpacity style={[styles.secondaryActionButton, {marginBottom: 20}]} onPress={() => { setInviteCode(''); setShowInviteModal(true); }}><Text style={styles.buttonText}>+ Invite Runners</Text></TouchableOpacity>}
@@ -1090,65 +1120,44 @@ const ClubDetailScreen = ({ setCurrentScreen, club, isAdmin, onDeleteClub, onRem
                 {viewAsAdmin && (<TouchableOpacity style={styles.removeMemberBtn} onPress={() => { setTargetMemberEmail(m.email); setShowMemberConfirm(true); }}><Text style={styles.removeText}>Remove</Text></TouchableOpacity>)}
               </View>
             ))}
-            {viewAsAdmin && <TouchableOpacity style={styles.deleteClubBtn} onPress={() => setShowClubConfirm(true)}><Text style={[styles.buttonText, { color: '#ef4444' }]}>Delete Club</Text></TouchableOpacity>}
+
+            {/* DELETE CLUB BUTTON (Moved Inside Card) */}
+            {viewAsAdmin && (
+              <TouchableOpacity 
+                  style={{
+                      marginTop: 40, 
+                      paddingVertical: 15, 
+                      borderWidth: 1, 
+                      borderColor: '#ef4444', 
+                      borderRadius: 12, 
+                      alignItems: 'center',
+                      backgroundColor: 'rgba(239, 68, 68, 0.05)'
+                  }} 
+                  onPress={() => setShowClubConfirm(true)}
+              >
+                  <Text style={{color: '#ef4444', fontWeight: 'bold', fontSize: 16}}>Delete Club</Text>
+              </TouchableOpacity>
+            )}
           </GlassCard>
         </View>
       )}
 
       {/* --- MODALS --- */}
       
-      {/* 1. EDIT ANNOUNCEMENT MODAL (KEYBOARD FIX: PERSIST TAPS HANDLED) */}
       <Modal transparent visible={showEditAnnModal} animationType="fade">
-        <KeyboardAvoidingView 
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'} 
-            style={styles.modalOverlay}
-        >
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
             <BlurView intensity={100} tint="dark" style={styles.confirmModal}>
-                <ScrollView 
-                    keyboardShouldPersistTaps="handled" 
-                    contentContainerStyle={{ flexGrow: 1 }}
-                    showsVerticalScrollIndicator={false}
-                >
+                <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ flexGrow: 1 }} showsVerticalScrollIndicator={false}>
                     <Text style={styles.modalTitle}>Edit Post</Text>
-                    
-                    <Text style={styles.label}>TITLE</Text>
-                    <TextInput style={styles.input} value={editAnnTitle} onChangeText={setEditAnnTitle} />
-                    
-                    <Text style={styles.label}>BODY</Text>
-                    <TextInput style={[styles.input, {minHeight: 100, textAlignVertical: 'top'}]} multiline value={editAnnBody} onChangeText={setEditAnnBody} />
-                    
-                    {/* SAVE BUTTON */}
-                    <TouchableOpacity 
-                        style={{
-                            marginTop: 20, 
-                            backgroundColor: '#ef4444', 
-                            paddingVertical: 18, 
-                            borderRadius: 16, 
-                            alignItems: 'center', 
-                            justifyContent: 'center',
-                            width: '100%',
-                            minHeight: 55
-                        }} 
-                        onPress={saveEditedAnnouncement}
-                    >
-                        <Text style={{
-                            color: '#FFFFFF', 
-                            fontWeight: 'bold', 
-                            fontSize: 16, 
-                            zIndex: 10,
-                            textAlign: 'center'
-                        }}>Save Changes</Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity style={[styles.cancelButton, {marginTop: 10}]} onPress={() => setShowEditAnnModal(false)}>
-                        <Text style={styles.buttonText}>Cancel</Text>
-                    </TouchableOpacity>
+                    <Text style={styles.label}>TITLE</Text><TextInput style={styles.input} value={editAnnTitle} onChangeText={setEditAnnTitle} />
+                    <Text style={styles.label}>BODY</Text><TextInput style={[styles.input, {minHeight: 100, textAlignVertical: 'top'}]} multiline value={editAnnBody} onChangeText={setEditAnnBody} />
+                    <TouchableOpacity style={{marginTop: 20, backgroundColor: '#ef4444', paddingVertical: 18, borderRadius: 16, alignItems: 'center', justifyContent: 'center', width: '100%', minHeight: 55}} onPress={saveEditedAnnouncement}><Text style={{color: '#FFFFFF', fontWeight: 'bold', fontSize: 16, zIndex: 10, textAlign: 'center'}}>Save Changes</Text></TouchableOpacity>
+                    <TouchableOpacity style={[styles.cancelButton, {marginTop: 10}]} onPress={() => setShowEditAnnModal(false)}><Text style={styles.buttonText}>Cancel</Text></TouchableOpacity>
                 </ScrollView>
             </BlurView>
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* 2. INVITE MODAL */}
       <Modal transparent visible={showInviteModal} animationType="slide">
         <View style={styles.bottomSheetOverlay}>
           <BlurView intensity={95} tint="dark" style={styles.bottomSheetContent}>
@@ -1166,10 +1175,8 @@ const ClubDetailScreen = ({ setCurrentScreen, club, isAdmin, onDeleteClub, onRem
         </View>
       </Modal>
 
-      {/* 3. PRIZE MODAL */}
       <Modal transparent visible={showPrizeEdit} animationType="slide"><View style={styles.bottomSheetOverlay}><BlurView intensity={95} tint="dark" style={styles.bottomSheetContent}><Text style={styles.modalTitle}>Set Prizes</Text><TextInput style={[styles.input, {minHeight: 100}]} multiline value={prizeText} onChangeText={setPrizeText}/><TouchableOpacity style={[styles.mainActionButton, {marginTop: 20}]} onPress={() => { onUpdatePrize(club.id, prizeText); setShowPrizeEdit(false); }}><Text style={styles.buttonText}>Save</Text></TouchableOpacity><TouchableOpacity style={[styles.cancelButton, {marginTop: 10}]} onPress={() => setShowPrizeEdit(false)}><Text style={styles.buttonText}>Cancel</Text></TouchableOpacity></BlurView></View></Modal>
       
-      {/* 4. CONFIRMATION MODALS */}
       <Modal transparent visible={showMemberConfirm} animationType="fade">
         <View style={[styles.modalOverlay, { alignItems: 'center', justifyContent: 'center' }]}>
             <BlurView intensity={80} tint="dark" style={{ padding: 30, borderRadius: 25, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)', overflow: 'hidden', width: '85%', maxWidth: 400, alignItems: 'center' }}>
@@ -1180,7 +1187,31 @@ const ClubDetailScreen = ({ setCurrentScreen, club, isAdmin, onDeleteClub, onRem
         </View>
       </Modal>
 
-      <Modal transparent visible={showClubConfirm} animationType="fade"><View style={styles.modalOverlay}><BlurView intensity={100} tint="dark" style={styles.confirmModal}><Text style={styles.modalTitle}>Delete Club?</Text><TouchableOpacity style={styles.modalConfirmBtnRed} onPress={() => { setShowClubConfirm(false); onDeleteClub(club.id); }}><Text style={styles.buttonText}>Confirm Delete</Text></TouchableOpacity><TouchableOpacity style={[styles.modalConfirmBtnSecondary, {marginTop: 20}]} onPress={() => setShowClubConfirm(false)}><Text style={styles.buttonText}>Cancel</Text></TouchableOpacity></BlurView></View></Modal>
+      {/* DELETE CLUB CONFIRMATION - Uses same industry standard modal */}
+      <Modal transparent visible={showClubConfirm} animationType="fade">
+          <View style={styles.modalOverlay}>
+              <BlurView intensity={100} tint="dark" style={styles.confirmModal}>
+                  <Text style={[styles.modalTitle, {color: '#ef4444'}]}>Delete Club?</Text>
+                  <Text style={{color: 'rgba(255,255,255,0.8)', textAlign: 'center', marginBottom: 25, paddingHorizontal: 10, lineHeight: 22, fontSize: 15}}>
+                      This action is permanent. All member data and announcements for this club will be lost.
+                  </Text>
+                  <View style={{ flexDirection: 'row', gap: 12, width: '100%' }}>
+                      <TouchableOpacity 
+                          style={{flex: 1, backgroundColor: 'rgba(255,255,255,0.1)', paddingVertical: 16, borderRadius: 16, alignItems: 'center'}} 
+                          onPress={() => setShowClubConfirm(false)}
+                      >
+                          <Text style={{color: 'white', fontWeight: 'bold', fontSize: 16}}>Cancel</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity 
+                          style={{flex: 1, backgroundColor: '#ef4444', paddingVertical: 16, borderRadius: 16, alignItems: 'center'}} 
+                          onPress={() => { onDeleteClub(club.id); setShowClubConfirm(false); }}
+                      >
+                          <Text style={{color: 'white', fontWeight: 'bold', fontSize: 16}}>Delete</Text>
+                      </TouchableOpacity>
+                  </View>
+              </BlurView>
+          </View>
+      </Modal>
       
       <Modal transparent visible={showAnnConfirm} animationType="fade">
           <View style={styles.modalOverlay}>
@@ -1505,37 +1536,56 @@ export default function App() {
   
   // --- FIREBASE CLUB HANDLERS (LIVE MODE) ---
 
-const handleLaunchClub = async (name) => {
+// 1. UPDATED: Launch Club (Ensures Founder Status is saved forever)
+  const handleLaunchClub = async (name) => {
     if (!user) return;
     try {
-      // 1. Create the Club
-      await addDoc(collection(db, "clubs"), { 
-        name: name, 
-        admin: userProfile.fullName || 'Unknown', 
-        adminId: user.uid, 
-        members: [{ name: userProfile.fullName, email: user.email, phone: userProfile.phone || "", miles: 0, shareConsent: true }], 
-        announcements: [], 
-        prizeMessage: "Welcome to the club! Set your prizes here.", 
-        createdAt: new Date() 
+      // Create the Club
+      await addDoc(collection(db, "clubs"), {
+        name: name,
+        admin: userProfile.fullName || 'Unknown Admin',
+        adminId: user.uid,
+        members: [{ 
+            name: userProfile.fullName, 
+            email: user.email, 
+            phone: userProfile.phone || "", 
+            miles: 0, 
+            shareConsent: true 
+        }],
+        announcements: [],
+        prizeMessage: "Welcome to the club! Set your prizes here.",
+        createdAt: new Date()
       });
 
-      // 2. CRITICAL: Ensure User is marked as Founder in Database
+      // CRITICAL: Mark user as Founder in the database
       await updateDoc(doc(db, "users", user.uid), { isFounder: true });
 
-      // 3. Navigate
       setCurrentScreen('Clubs');
-      setToastMessage("Club Launched!"); 
+      setToastMessage("Club Launched!");
       setShowToast(true);
-    } catch (error) { 
-        Alert.alert("Error", "Could not create club: " + error.message); 
+    } catch (error) {
+      Alert.alert("Error", "Could not create club: " + error.message);
     }
   };
 
-  // NEW HELPER: For the "Unlock" button on the sales page
+// 2. NEW: Cancel Subscription
+  const handleCancelSubscription = async () => {
+    if (!user) return;
+    try {
+        await updateDoc(doc(db, "users", user.uid), { isFounder: false });
+        setToastMessage("Subscription Cancelled");
+        setShowToast(true);
+        setCurrentScreen('Home'); // Redirect home after cancelling
+    } catch (e) {
+        Alert.alert("Error", e.message);
+    }
+  };
+
+// 3. NEW: Unlock Founder (For the Sales Page button)
   const handleUnlockFounder = async () => {
       if(!user) return;
       await updateDoc(doc(db, "users", user.uid), { isFounder: true });
-      setToastMessage("You are now a Founder!");
+      setToastMessage("Unlocked! You are a Founder.");
       setShowToast(true);
   };
 
@@ -1648,7 +1698,14 @@ const handleLaunchClub = async (name) => {
         {currentScreen === 'Home' && <HomeScreen setCurrentScreen={setCurrentScreen} shoes={shoesWithMiles} userProfile={userProfile} monthlyMiles={monthlyMiles} onLogout={handleLogout} />}
         
         {/* Screen: Profile */}
-        {currentScreen === 'Profile' && <ProfileScreen setCurrentScreen={setCurrentScreen} userProfile={userProfile} onUpdateUser={handleUpdateUser} />}
+{currentScreen === 'Profile' && (
+  <ProfileScreen 
+    setCurrentScreen={setCurrentScreen} 
+    userProfile={userProfile} 
+    onUpdateUser={handleUpdateUser} 
+    onCancelSubscription={handleCancelSubscription} // <--- PASS THIS
+  />
+)}
         
         {/* Screen: Log Run */}
         {currentScreen === 'Log' && <LogPage setCurrentScreen={setCurrentScreen} shoes={shoesWithMiles} onSaveRun={handleSaveRun} setToastMessage={setToastMessage} setShowToast={setShowToast} />}
@@ -1669,14 +1726,14 @@ const handleLaunchClub = async (name) => {
         
        {/* Screen: Clubs Hub */}
         {currentScreen === 'Clubs' && (
-            <ClubsScreen 
-                setCurrentScreen={setCurrentScreen} 
-                clubs={clubs} 
-                userProfile={userProfile} // 👈 Added
-                onUnlockFounder={handleUnlockFounder} // 👈 Added
-                onSelectClub={(c) => { setSelectedClub(c); setCurrentScreen('ClubDetail'); }} 
-            />
-        )}
+  <ClubsScreen 
+    setCurrentScreen={setCurrentScreen} 
+    clubs={clubs} 
+    onSelectClub={(c) => { setSelectedClub(c); setCurrentScreen('ClubDetail'); }}
+    userProfile={userProfile}       // <--- PASS THIS
+    onUnlockFounder={handleUnlockFounder} // <--- PASS THIS
+  />
+)}
         {currentScreen === 'CreateClub' && <CreateClubScreen setCurrentScreen={setCurrentScreen} onLaunch={handleLaunchClub} />}
         {currentScreen === 'JoinClub' && <JoinClubScreen setCurrentScreen={setCurrentScreen} onJoin={onJoinClub} />}
         
