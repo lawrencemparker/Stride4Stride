@@ -5,15 +5,33 @@ import { BlurView } from 'expo-blur';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location'; 
 import * as ImagePicker from 'expo-image-picker';
+import * as Device from 'expo-device';
+import * as Notifications from 'expo-notifications';
+import Constants from 'expo-constants';
+
+
 
 // --- FIREBASE IMPORTS ---
 // IMPORTANT: Ensure 'storage' is exported from your firebaseConfig.js
 import { auth, db, storage } from './firebaseConfig'; 
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut } from 'firebase/auth';
-import { collection, addDoc, query, where, onSnapshot, orderBy, setDoc, doc, updateDoc, deleteDoc, arrayUnion, getDoc } from 'firebase/firestore';
+import { collection, addDoc, query, where, onSnapshot, orderBy, setDoc, doc, updateDoc, deleteDoc, arrayUnion, getDoc, getDocs } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 const { width } = Dimensions.get('window');
+
+// --- 1. CONFIGURE NOTIFICATION BEHAVIOR (Paste this here) ---
+// ONLY run this on mobile
+if (Platform.OS !== 'web') {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: false,
+    }),
+  });
+}
+
 
 // --- SHARED COMPONENTS ---
 const GlassCard = ({ children, style }) => (
@@ -1334,57 +1352,32 @@ const AnnouncementComposer = ({ setCurrentScreen, club, onPost }) => {
 };
 
 // --- HOME SCREEN (WITH REAL WEATHER) ---
-const HomeScreen = ({ setCurrentScreen, shoes, userProfile, monthlyMiles, onLogout }) => {
+// --- HOME SCREEN (WITH REAL WEATHER & DEBUG BUTTON) ---
+const HomeScreen = ({ setCurrentScreen, shoes, userProfile, monthlyMiles, onLogout, expoPushToken }) => {
   const [weather, setWeather] = useState({ temp: '--', condition: 'Loading...', city: 'Locating...', icon: '⏳' });
 
   useEffect(() => {
     (async () => {
       try {
-        // 1. Request Permission & Get Location
         let { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== 'granted') {
-          setWeather({ temp: '--', condition: 'Permission Denied', city: 'Location needed', icon: '🚫' });
-          return;
-        }
-
+        if (status !== 'granted') return;
         let location = await Location.getCurrentPositionAsync({});
         const { latitude, longitude } = location.coords;
-
-        // 2. Get City Name (Reverse Geocoding)
         let address = await Location.reverseGeocodeAsync({ latitude, longitude });
         const city = address[0]?.city || address[0]?.name || "Unknown";
         const region = address[0]?.region || "";
-
-        // 3. Fetch Weather (Open-Meteo API - Free, No Key Required)
-        const response = await fetch(
-          `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current_weather=true&temperature_unit=fahrenheit`
-        );
+        const response = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current_weather=true&temperature_unit=fahrenheit`);
         const data = await response.json();
         const { temperature, weathercode } = data.current_weather;
-
-        // 4. Map Weather Codes to Icons
-        let conditionText = "Clear";
-        let icon = "☀️";
-        
-        // WMO Weather interpretation codes
+        let conditionText = "Clear"; let icon = "☀️";
         if (weathercode >= 1 && weathercode <= 3) { conditionText = "Partly Cloudy"; icon = "⛅"; }
         else if (weathercode >= 45 && weathercode <= 48) { conditionText = "Foggy"; icon = "🌫️"; }
         else if (weathercode >= 51 && weathercode <= 67) { conditionText = "Rain"; icon = "🌧️"; }
         else if (weathercode >= 71 && weathercode <= 77) { conditionText = "Snow"; icon = "❄️"; }
         else if (weathercode >= 80 && weathercode <= 82) { conditionText = "Showers"; icon = "🌦️"; }
         else if (weathercode >= 95) { conditionText = "Thunderstorm"; icon = "⛈️"; }
-
-        setWeather({ 
-          temp: Math.round(temperature), 
-          condition: conditionText, 
-          city: region ? `${city}, ${region}` : city, 
-          icon: icon 
-        });
-
-      } catch (error) {
-        console.error("Weather Error:", error);
-        setWeather({ temp: '--', condition: 'Unavailable', city: 'Weather Error', icon: '⚠️' });
-      }
+        setWeather({ temp: Math.round(temperature), condition: conditionText, city: region ? `${city}, ${region}` : city, icon: icon });
+      } catch (error) { setWeather({ temp: '--', condition: 'Unavailable', city: 'Weather Error', icon: '⚠️' }); }
     })();
   }, []);
 
@@ -1397,7 +1390,6 @@ const HomeScreen = ({ setCurrentScreen, shoes, userProfile, monthlyMiles, onLogo
       
       <View style={styles.row}><View><Text style={styles.greeting}>Hello, {userProfile?.fullName?.split(' ')[0] || 'Runner'}</Text><Text style={styles.subGreeting}>Let's make progress today!</Text></View></View>
       
-      {/* DYNAMIC WEATHER CARD */}
       <GlassCard style={styles.weatherMargin}>
         <Text style={styles.weatherText}>{weather.icon}  {weather.temp}° {weather.condition}</Text>
         <Text style={styles.weatherDetails}>{weather.city}</Text>
@@ -1414,9 +1406,78 @@ const HomeScreen = ({ setCurrentScreen, shoes, userProfile, monthlyMiles, onLogo
       </TouchableOpacity>
 
       <TouchableOpacity style={styles.logoutBtn} onPress={onLogout}><Text style={styles.logoutText}>Log Out</Text></TouchableOpacity>
+
+      {/* TEMP: DEBUG BUTTON (Now in the correct place) */}
+      <TouchableOpacity 
+        style={{marginTop: 20, backgroundColor: '#333', padding: 10, borderRadius: 10}} 
+        onPress={() => {
+           console.log("Current Token:", expoPushToken);
+           Alert.alert("My Token", expoPushToken || "No token found yet");
+        }}
+      >
+        <Text style={{color: 'white', textAlign: 'center'}}>Show Push Token</Text>
+      </TouchableOpacity>
+
     </ScrollView>
   );
 };
+
+
+// 2. HELPER FUNCTION: GET PUSH TOKEN
+// --- PASTE THIS RIGHT BEFORE 'export default function App' ---
+
+// 2. HELPER FUNCTION: GET PUSH TOKEN
+async function registerForPushNotificationsAsync() {
+  // 1. EXIT IMMEDIATELY IF ON WEB
+  if (Platform.OS === 'web') {
+    console.log("Push notifications skipped on web.");
+    return;
+  }
+
+  let token;
+
+  // 2. Android Channel Setup
+  if (Platform.OS === 'android') {
+    await Notifications.setNotificationChannelAsync('default', {
+      name: 'default',
+      importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: '#FF231F7C',
+    });
+  }
+
+  // 3. Check Device Type & Permissions
+  if (Device.isDevice) {
+    const { status: existingStatus } = await Notifications.getPermissionsAsync();
+    let finalStatus = existingStatus;
+    
+    // Ask for permission if not granted
+    if (existingStatus !== 'granted') {
+      const { status } = await Notifications.requestPermissionsAsync();
+      finalStatus = status;
+    }
+    
+    if (finalStatus !== 'granted') {
+      console.log('Failed', 'Permission not granted for notifications');
+      return;
+    }
+
+    // 4. Get the Token
+    try {
+        const projectId = Constants.expoConfig?.extra?.eas?.projectId || Constants.easConfig?.projectId;
+        token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
+        console.log("✅ SUCCESS - Token:", token);
+    } catch (e) {
+        console.log("❌ ERROR getting token:", e);
+    }
+  } else {
+    console.log('Notice: Push Notifications only work on physical phones, not Simulators.');
+  }
+
+  return token;
+}
+
+
 
 // --- MAIN APP COMPONENT ---
 export default function App() {
@@ -1427,11 +1488,21 @@ export default function App() {
   const [showToast, setShowToast] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
   const [runs, setRuns] = useState([]);
+  // --- 1. ADD THIS NEW STATE ---
+  const [expoPushToken, setExpoPushToken] = useState('');
   
   // Initialize as empty arrays since we are using Firebase
   const [clubs, setClubs] = useState([]);
   const [shoeInventory, setShoeInventory] = useState([]);
   const [selectedClub, setSelectedClub] = useState(null);
+
+// --- 2. ADD THIS NEW EFFECT ---
+  useEffect(() => {
+    // This runs on app startup to ask for permission
+    registerForPushNotificationsAsync().then(token => {
+      if (token) setExpoPushToken(token);
+    });
+  }, []);
 
   // Persistence Check
   useEffect(() => {
@@ -1474,6 +1545,14 @@ export default function App() {
     }
   }, [clubs]);
 
+
+// 3. NEW USE EFFECT: REQUEST PERMISSION ON STARTUP
+  useEffect(() => {
+    registerForPushNotificationsAsync().then(token => {
+        if(token) setExpoPushToken(token);
+    });
+  }, []);
+
   const monthlyMiles = runs.reduce((acc, curr) => acc + (curr.distance || 0), 0).toFixed(1);
   const shoesWithMiles = shoeInventory.map(shoe => {
     const loggedMiles = runs.filter(r => r.shoeId === shoe.id).reduce((acc, curr) => acc + (curr.distance || 0), 0);
@@ -1481,7 +1560,18 @@ export default function App() {
   });
 
   // Safe Actions
-  const handleLogin = async (email, password) => { try { await signInWithEmailAndPassword(auth, email, password); } catch (e) { Alert.alert("Login Failed", e.message); } };
+  const handleLogin = async (email, password) => { 
+      try { 
+          const cred = await signInWithEmailAndPassword(auth, email, password); 
+          
+          // --- 3. UPDATE TOKEN ON LOGIN ---
+          if(expoPushToken) {
+              await updateDoc(doc(db, "users", cred.user.uid), { pushToken: expoPushToken });
+          }
+      } catch (e) { 
+          Alert.alert("Login Failed", e.message); 
+      } 
+  };
   
   // *** RE-RUN SAFE REGISTRATION ***
   const handleOnboardingRegister = async (email, password, fullName, phone) => {
@@ -1491,7 +1581,15 @@ export default function App() {
       const user = userCredential.user;
       
       // If successful, write to database
-      await setDoc(doc(db, "users", user.uid), { fullName, email, phone, shareConsent: true, createdAt: new Date() });
+      // This is the NEW code (adds pushToken)
+await setDoc(doc(db, "users", user.uid), { 
+    fullName, 
+    email, 
+    phone, 
+    shareConsent: true, 
+    createdAt: new Date(),
+    pushToken: expoPushToken || null // <--- This adds the token!
+});
       await AsyncStorage.setItem('hasSeenOnboarding', 'true');
       setHasSeenOnboarding(true);
       setToastMessage("Welcome to the Pack!"); setShowToast(true);
@@ -1671,16 +1769,64 @@ export default function App() {
     } catch (e) { Alert.alert("Error", e.message); }
   };
 
-  const handlePostAnnouncement = async (cId, title, body) => {
+ const handlePostAnnouncement = async (cId, title, body) => {
     try {
+      // 1. Save to Database (Standard Logic)
       const newAnn = { id: Date.now(), title, body };
       await updateDoc(doc(db, "clubs", cId), {
         announcements: arrayUnion(newAnn)
       });
+
+      // 2. NOTIFICATION LOGIC START
+      // Find the club to get the member list
+      const club = clubs.find(c => c.id === cId);
+      if (club && club.members.length > 0) {
+        const tokensToSend = [];
+
+        // Loop through members to find their tokens in the 'users' collection
+        // (We check the 'users' collection because that's where the fresh tokens live)
+        for (const member of club.members) {
+          // Don't notify the person sending the message!
+          if (member.email === user.email) continue;
+
+          // Query the user by email to get their token
+          const q = query(collection(db, "users"), where("email", "==", member.email));
+          const querySnapshot = await getDocs(q);
+          
+          querySnapshot.forEach((doc) => {
+            const userData = doc.data();
+            if (userData.pushToken) {
+              tokensToSend.push(userData.pushToken);
+            }
+          });
+        }
+
+        // 3. Send the Blast via Expo
+        if (tokensToSend.length > 0) {
+          await fetch('https://exp.host/--/api/v2/push/send', {
+            method: 'POST',
+            headers: {
+              Accept: 'application/json',
+              'Accept-encoding': 'gzip, deflate',
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              to: tokensToSend,
+              title: `📢 ${club.name}`,
+              body: `${title}: ${body}`,
+              sound: 'default',
+            }),
+          });
+        }
+      }
+      // NOTIFICATION LOGIC END
+
       setCurrentScreen('ClubDetail');
-      setToastMessage("Post sent to Database!");
+      setToastMessage("Post sent & Members Notified!");
       setShowToast(true);
-    } catch (e) { Alert.alert("Firebase Error", e.message); }
+    } catch (e) { 
+      Alert.alert("Error", e.message); 
+    }
   };
 
   const handleDeleteAnnouncement = async (cId, annId) => {
@@ -1780,7 +1926,8 @@ export default function App() {
       <SafeAreaView style={{ flex: 1 }}>
         
         {/* Screen: Home */}
-        {currentScreen === 'Home' && <HomeScreen setCurrentScreen={setCurrentScreen} shoes={shoesWithMiles} userProfile={userProfile} monthlyMiles={monthlyMiles} onLogout={handleLogout} />}
+        {/* Updated to pass expoPushToken */}
+{currentScreen === 'Home' && <HomeScreen setCurrentScreen={setCurrentScreen} shoes={shoesWithMiles} userProfile={userProfile} monthlyMiles={monthlyMiles} onLogout={handleLogout} expoPushToken={expoPushToken} />}
         
 {/* Screen: Profile */}
         {currentScreen === 'Profile' && (
@@ -1788,8 +1935,8 @@ export default function App() {
             setCurrentScreen={setCurrentScreen} 
             userProfile={userProfile} 
             onUpdateUser={handleUpdateUser} 
-            onCancelSubscription={handleCancelSubscription} 
-            onUploadPhoto={handleUploadPhoto} // 👈 This connects the new function
+            onCancelSubscription={handleCancelSubscription} // 👈 Ensure this matches the function name above
+            onUploadPhoto={handleUploadPhoto} 
           />
         )}
         
