@@ -1,0 +1,61 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // --- HELPER FUNCTIONS ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isClubAdmin(resource) {
+      return resource.data.adminId == request.auth.uid;
+    }
+
+    // --- 1. USERS COLLECTION ---
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    // --- 2. CLUBS COLLECTION ---
+    match /clubs/{clubId} {
+      allow create: if isSignedIn();
+      allow read: if isSignedIn();
+      allow delete: if isClubAdmin(resource);
+      allow update: if isSignedIn() && (
+        isClubAdmin(resource) || 
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members']))
+      );
+    }
+
+   // --- 3. RUNS COLLECTION ---
+    match /runs/{runId} {
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow read, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn() 
+        && resource.data.userId == request.auth.uid 
+        && request.resource.data.userId == request.auth.uid;
+    }
+
+    // --- 4. SHOES COLLECTION ---
+    match /shoes/{shoeId} {
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow read, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn() 
+        && resource.data.userId == request.auth.uid 
+        && request.resource.data.userId == request.auth.uid;
+    }
+	// --- 5. SUBSCRIPTIONS COLLECTION ---
+    match /subscriptions/{subscriptionId} {
+      // Allows reading if the user is the owner
+      allow read: if request.auth != null && resource.data.userId == request.auth.uid;
+      
+      // TEMPORARY FIX: Allows delete if the userId in the document matches the logged-in user
+      allow delete: if request.auth != null && (
+        resource.data.userId == request.auth.uid || 
+        subscriptionId == request.auth.uid
+      );
+    }
+	
+  }
+}
